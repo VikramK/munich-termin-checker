@@ -1,0 +1,29 @@
+[project]
+name = "munich-termin-checker"
+version = "0.1.0"
+description = "Automated government appointment checker and auto-booker using Playwright"
+dependencies = [
+    "playwright>=1.40",
+    "python-dotenv>=1.0",
+]
+readme = "README.md"
+requires-python = ">= 3.8"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = [
+    "pytest>=8.0",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/munich_termin_checker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.munich-appointment.burst</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/anveshgopalam/.rye/shims/rye</string>
+        <string>run</string>
+        <string>python</string>
+        <string>terminchecker.py</string>
+        <string>--burst</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/anveshgopalam/Projects/munich-appointment</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/anveshgopalam/.rye/shims:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <!--
+      Release windows (Munich local time / CEST):
+        Mon 07:28, Wed 07:28, Fri 07:28  (releases at 07:30)
+        Tue 08:28, Thu 08:28              (releases at 08:30)
+      Weekday: 1=Mon … 5=Fri
+    -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Weekday</key><integer>1</integer>
+            <key>Hour</key><integer>7</integer>
+            <key>Minute</key><integer>28</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>2</integer>
+            <key>Hour</key><integer>8</integer>
+            <key>Minute</key><integer>28</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>3</integer>
+            <key>Hour</key><integer>7</integer>
+            <key>Minute</key><integer>28</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>4</integer>
+            <key>Hour</key><integer>8</integer>
+            <key>Minute</key><integer>28</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key><integer>5</integer>
+            <key>Hour</key><integer>7</integer>
+            <key>Minute</key><integer>28</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/anveshgopalam/Projects/munich-appointment/logs/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/anveshgopalam/Projects/munich-appointment/logs/launchd.err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

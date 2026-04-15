@@ -23,15 +23,13 @@ take precedence).  See ``.env.example`` for all available keys.
 # ---------------------------------------------------------------------------
 # Imports
 # ---------------------------------------------------------------------------
-import html
+import argparse
 import os
 import sys
 import time
 import random
-import smtplib
 import traceback
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
 
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
@@ -62,10 +60,27 @@ class _C:
 # Constants
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Paths & .env loading (must run before any cfg() lookups below)
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGS_DIR = os.path.join(SCRIPT_DIR, "logs")
+ENV_FILE = os.path.join(SCRIPT_DIR, ".env")
+
+load_dotenv(ENV_FILE, override=False)
+
+
+def cfg(key, default=None):
+    """Read a config value.  Precedence: env var > .env file > *default*."""
+    return os.environ.get(key) or default
+
+
 # Target URL for the appointment page.
-TARGET_URL = (
+TARGET_URL = cfg(
+    "TARGET_URL",
     "https://stadt.muenchen.de/buergerservice/"
-    "terminvereinbarung.html#/services/10339028/"
+    "terminvereinbarung.html#/services/1063741/locations/10308621",
 )
 
 # Phrases (lowercase) on the result page when NO appointments are available.
@@ -126,35 +141,18 @@ BOOK_BTN = (
 )
 
 # ---------------------------------------------------------------------------
-# Paths & timing configuration
+# Timing configuration (env-overridable)
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-LOGS_DIR = os.path.join(SCRIPT_DIR, "logs")
-ENV_FILE = os.path.join(SCRIPT_DIR, ".env")
-
-CHECK_INTERVAL_MIN = 45   # seconds — minimum pause between attempts
-CHECK_INTERVAL_MAX = 90   # seconds — maximum pause between attempts
-MAX_DURATION_S = 30 * 60  # total run time before the script exits
+CHECK_INTERVAL_MIN = int(cfg("CHECK_INTERVAL_MIN", "45"))
+CHECK_INTERVAL_MAX = int(cfg("CHECK_INTERVAL_MAX", "90"))
+MAX_DURATION_S = int(cfg("MAX_DURATION_S", str(30 * 60)))
 
 # ---------------------------------------------------------------------------
 # Module-level state
 # ---------------------------------------------------------------------------
 
 _log_fh = None  # file handle for the current run log
-
-
-# =========================================================================
-# Configuration
-# =========================================================================
-
-# Load .env into os.environ (existing env vars take precedence)
-load_dotenv(ENV_FILE, override=False)
-
-
-def cfg(key, default=None):
-    """Read a config value.  Precedence: env var > .env file > *default*."""
-    return os.environ.get(key) or default
 
 
 # =========================================================================
@@ -302,67 +300,14 @@ def _dump_debug(page, prefix):
 # =========================================================================
 
 def _send_email(booked=False, booking_details=None):
-    """Send an HTML email notification.
-
-    If *booked* is True, sends a booking confirmation with *booking_details*.
-    Otherwise sends a generic "slots may be available" alert.
-    """
-    sender = cfg("SENDER_EMAIL")
-    receiver = cfg("RECEIVER_EMAIL")
-    password = cfg("SMTP_PASSWORD")
-
-    if not sender or not receiver:
-        log_fail("SENDER_EMAIL or RECEIVER_EMAIL not configured — skipping email.")
-        return
-    if not password:
-        log_fail("SMTP_PASSWORD is not configured — skipping email.")
-        return
-
-    smtp_host = cfg("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(cfg("SMTP_PORT", "587"))
-
-    safe_url = html.escape(TARGET_URL, quote=True)
-
+    """Terminal-only notification. SMTP sending is disabled."""
     if booked and booking_details:
-        subject = "Appointment BOOKED!"
-        body = (
-            "<h3>Appointment successfully booked!</h3>"
-            "<table style='border-collapse:collapse;'>"
-        )
+        log_success_banner("APPOINTMENT BOOKED — DETAILS")
         for label, value in booking_details.items():
-            body += (
-                f"<tr><td style='padding:4px 12px 4px 0;font-weight:bold;'>"
-                f"{html.escape(str(label))}</td>"
-                f"<td style='padding:4px 0;'>{html.escape(str(value))}</td></tr>"
-            )
-        body += "</table>"
-        body += (
-            "<p>Check the logs folder for confirmation screenshots.</p>"
-            f'<p><a href="{safe_url}">Open booking page</a></p>'
-        )
+            log_detail(f"{label}: {value}")
     else:
-        subject = "Appointments May Be Available!"
-        body = (
-            "<h3>Appointments may be available!</h3>"
-            "<p>The appointment page did <b>not</b> show the usual "
-            "'no appointments' message.</p>"
-            f'<p><a href="{safe_url}">Open booking page</a></p>'
-        )
-
-    msg = MIMEText(body, "html")
-    msg["From"] = sender
-    msg["To"] = receiver
-    msg["Subject"] = subject
-
-    try:
-        log(f"  Sending notification email to {receiver} ...")
-        with smtplib.SMTP(smtp_host, smtp_port) as srv:
-            srv.starttls()
-            srv.login(sender, password)
-            srv.sendmail(sender, receiver, msg.as_string())
-        log_ok("Email sent successfully.")
-    except Exception as exc:
-        log_fail(f"Email failed: {type(exc).__name__}: {exc}")
+        log_success_banner("APPOINTMENTS MAY BE AVAILABLE — check the page manually!")
+        log_detail(f"URL: {TARGET_URL}")
 
 
 # =========================================================================
@@ -394,6 +339,75 @@ def _wait_and_click_weiter(page, tag, step_label, timeout=15000):
         _dump_debug(page, f"{tag}_{step_label}_timeout")
         _send_email()
         return False
+
+
+# Known-benign page errors that fire on every attempt but don't affect the
+# booking flow. These are logged once per run during dev, then suppressed.
+_BENIGN_ERROR_SUBSTRINGS = (
+    "www48.muenchen.de/wrapper.js",
+)
+
+
+def _is_benign(text):
+    return any(s in text for s in _BENIGN_ERROR_SUBSTRINGS)
+
+
+def _on_console(msg):
+    if msg.type not in ("error", "warning"):
+        return
+    if _is_benign(msg.text):
+        return
+    log_detail(f"[console.{msg.type}] {msg.text[:200]}")
+
+
+def _on_pageerror(err):
+    text = str(err)
+    if _is_benign(text):
+        return
+    log_detail(f"[pageerror] {text[:200]}")
+
+
+def _dismiss_cookie_banner(page):
+    """Remove the Usercentrics cookie banner so it stops intercepting clicks.
+
+    Tries to click a common accept button inside the banner's shadow root,
+    then removes the banner root element entirely (and installs a
+    MutationObserver to keep removing it if the SDK re-injects it).
+    """
+    try:
+        result = page.evaluate(
+            """() => {
+                const kill = () => {
+                    const r = document.querySelector('#usercentrics-root');
+                    if (r) r.remove();
+                };
+                const root = document.querySelector('#usercentrics-root');
+                let clicked = null;
+                if (root && root.shadowRoot) {
+                    const labels = [
+                        'alle akzeptieren', 'akzeptieren', 'zustimmen',
+                        'accept all', 'accept', 'weiter',
+                    ];
+                    const buttons = Array.from(
+                        root.shadowRoot.querySelectorAll('button')
+                    );
+                    for (const label of labels) {
+                        const btn = buttons.find(
+                            b => b.textContent.trim().toLowerCase().includes(label)
+                        );
+                        if (btn) { btn.click(); clicked = label; break; }
+                    }
+                }
+                kill();
+                new MutationObserver(kill).observe(
+                    document.body, {childList: true}
+                );
+                return clicked ? ('clicked: ' + clicked) : 'removed';
+            }"""
+        )
+        log_detail(f"Cookie banner: {result}")
+    except Exception as exc:
+        log_warn(f"Cookie banner handling failed: {exc}")
 
 
 def _fill_field(page, selectors, value):
@@ -443,10 +457,13 @@ def check_appointment(page, attempt_num):
         log_detail(TARGET_URL)
         page.goto(TARGET_URL, wait_until="domcontentloaded")
 
-        # Random delay to let the widget JS initialise
-        pause = random.uniform(4, 7)
+        # Short delay to let the widget JS initialise — Step 1 will then
+        # block on the shadow DOM, so we don't need a long sleep here.
+        pause = random.uniform(2, 4)
         log_warn(f"Waiting {pause:.1f}s for widget JS to initialise ...")
         page.wait_for_timeout(pause * 1000)
+
+        _dismiss_cookie_banner(page)
 
         # -- Step 1: Wait for the inner shadow DOM -------------------------
         log_step(1, "Waiting for inner shadow DOM ...")
@@ -472,14 +489,18 @@ def check_appointment(page, attempt_num):
         # -- Step 3: Click checkbox and wait for proof-of-work -------------
         log_step(3, "Clicking ALTCHA checkbox to start proof-of-work ...")
         altcha_cb.click()
-        log_warn("Waiting up to 30s for proof-of-work computation ...")
+        log_warn("Waiting up to 120s for proof-of-work computation ...")
+        pow_start = time.monotonic()
         try:
             _shadow(page, '.altcha[data-state="verified"]').wait_for(
-                state="attached", timeout=30_000
+                state="attached", timeout=120_000
             )
-            log_ok("ALTCHA captcha solved and verified.")
+            log_ok(
+                f"ALTCHA captcha solved and verified "
+                f"({time.monotonic() - pow_start:.0f}s)."
+            )
         except PlaywrightTimeout:
-            log_fail("ALTCHA did not reach 'verified' state within 30s.")
+            log_fail("ALTCHA did not reach 'verified' state within 120s.")
             _dump_debug(page, f"{tag}_step3_timeout")
             return False
 
@@ -707,15 +728,29 @@ def check_appointment(page, attempt_num):
 # Main loop
 # =========================================================================
 
-def main():
-    """Run the checker in a loop for up to ``MAX_DURATION_S`` seconds.
+def main(burst=False):
+    """Run the checker in a loop.
 
     Launches the Playwright browser once, creates a fresh page per attempt,
     and sleeps a randomised interval between checks.
 
+    When ``burst`` is True, uses a short/tight preset (3 min, 10-15s interval)
+    — pair with cron at 07:28 Mon/Wed/Fri and 08:28 Tue/Thu to catch newly
+    released slots.
+
     Returns 0 on successful booking, 1 if no appointments were found.
     """
     global _log_fh
+
+    # Burst mode overrides the standard timing constants with a tight preset.
+    if burst:
+        interval_min = 10
+        interval_max = 15
+        duration_s = 180
+    else:
+        interval_min = CHECK_INTERVAL_MIN
+        interval_max = CHECK_INTERVAL_MAX
+        duration_s = MAX_DURATION_S
 
     os.makedirs(LOGS_DIR, exist_ok=True)
 
@@ -725,16 +760,17 @@ def main():
 
     try:
         start = datetime.now()
-        deadline = start + timedelta(seconds=MAX_DURATION_S)
+        deadline = start + timedelta(seconds=duration_s)
         attempt = 0
 
         # -- Header banner -------------------------------------------------
         log_banner("=" * 60)
         log_banner("  Appointment Checker & Auto-Booker")
         log_banner("=" * 60)
+        log_detail(f"Mode           : {'BURST' if burst else 'standard'}")
         log_detail(f"Target URL     : {TARGET_URL}")
-        log_detail(f"Check interval : {CHECK_INTERVAL_MIN}-{CHECK_INTERVAL_MAX}s (randomised)")
-        log_detail(f"Max duration   : {MAX_DURATION_S // 60} minutes")
+        log_detail(f"Check interval : {interval_min}-{interval_max}s (randomised)")
+        log_detail(f"Max duration   : {duration_s // 60}m {duration_s % 60}s")
         log_detail(f"Started at     : {start.strftime('%Y-%m-%d %H:%M:%S')}")
         log_detail(f"Will stop at   : {deadline.strftime('%Y-%m-%d %H:%M:%S')}")
         log_detail(f"Log file       : {log_path}")
@@ -754,7 +790,16 @@ def main():
 
         # Launch browser once; create a fresh context per attempt
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=CalculateNativeWinOcclusion",
+                ],
+            )
 
             while datetime.now() < deadline:
                 attempt += 1
@@ -766,9 +811,17 @@ def main():
 
                 # Fresh context per attempt (clean cookies/state)
                 context = browser.new_context(
-                    viewport={"width": 1920, "height": 1080}
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    locale="de-DE",
                 )
                 page = context.new_page()
+                page.on("console", _on_console)
+                page.on("pageerror", _on_pageerror)
                 try:
                     found = check_appointment(page, attempt)
                 finally:
@@ -783,8 +836,8 @@ def main():
                     return 0
 
                 # Sleep before next attempt if there is enough time left
-                if datetime.now() + timedelta(seconds=CHECK_INTERVAL_MIN) < deadline:
-                    pause = random.uniform(CHECK_INTERVAL_MIN, CHECK_INTERVAL_MAX)
+                if datetime.now() + timedelta(seconds=interval_min) < deadline:
+                    pause = random.uniform(interval_min, interval_max)
                     log_warn(f"Sleeping {pause:.0f}s before next attempt ...")
                     time.sleep(pause)
                     print()
@@ -810,4 +863,13 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(
+        description="Munich government appointment checker & auto-booker."
+    )
+    parser.add_argument(
+        "--burst",
+        action="store_true",
+        help="Short/tight run (3 min, 10-15s interval) for release windows.",
+    )
+    args = parser.parse_args()
+    sys.exit(main(burst=args.burst))
